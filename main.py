@@ -50,35 +50,41 @@ async def wait_for_pair(session, symbol):
     log_info(f"Waiting for {symbol} to become live...")
     url = f"{BASE_URL}/api/v5/public/instruments?instType=SPOT"
     while True:
-        async with session.get(url) as resp:
-            data = await resp.json()
-            instruments = data.get("data", [])
-            for item in instruments:
-                if item['instId'].upper() == symbol.upper():
-                    log_success(f"{symbol} is now live!")
-                    return
+        try:
+            async with session.get(url) as resp:
+                data = await resp.json()
+                instruments = data.get("data", [])
+                for item in instruments:
+                    if item['instId'].upper() == symbol.upper():
+                        log_success(f"{symbol} is now live!")
+                        return
+        except Exception as e:
+            log_warning(f"Network/API error while checking pair: {e}")
         await asyncio.sleep(1)
 
 async def wait_for_trading_start(session, symbol):
     log_info(f"Waiting for official trading to start for {symbol}...")
     url = f"{BASE_URL}/api/v5/market/ticker?instId={symbol}"
     while True:
-        async with session.get(url) as resp:
-            data = await resp.json()
-            if data.get('code') == '0' and data.get('data'):
-                ticker = data['data'][0]
-                last = ticker.get('last')
-                try:
-                    last_price = Decimal(last)
-                    if last_price > 0:
-                        log_success(f"Trading started! Last price: {last_price}")
-                        return last_price
-                    else:
-                        log_warning(f"Trading not started yet. Last price: {last}")
-                except Exception:
-                    log_warning(f"Ticker 'last' value not valid: {last}")
-            else:
-                log_warning(f"Invalid ticker data: {data}")
+        try:
+            async with session.get(url) as resp:
+                data = await resp.json()
+                if data.get('code') == '0' and data.get('data'):
+                    ticker = data['data'][0]
+                    last = ticker.get('last')
+                    try:
+                        last_price = Decimal(last)
+                        if last_price > 0:
+                            log_success(f"Trading started! Last price: {last_price}")
+                            return last_price
+                        else:
+                            log_warning(f"Trading not started yet. Last price: {last}")
+                    except Exception:
+                        log_warning(f"Ticker 'last' value not valid: {last}")
+                else:
+                    log_warning(f"Invalid ticker data: {data}")
+        except Exception as e:
+            log_warning(f"Network/API error while checking trading start: {e}")
         await asyncio.sleep(0.5)
 
 async def place_limit_order(session, inst_id, size, px):
@@ -93,8 +99,12 @@ async def place_limit_order(session, inst_id, size, px):
     }
     body_json = json.dumps(body)
     headers = build_headers(okx_api_key, okx_api_secret, okx_passphrase, "POST", path, body_json)
-    async with session.post(BASE_URL + path, headers=headers, data=body_json) as resp:
-        return await resp.json()
+    try:
+        async with session.post(BASE_URL + path, headers=headers, data=body_json) as resp:
+            return await resp.json()
+    except Exception as e:
+        log_error(f"Network/API error while placing order: {e}")
+        return {"code": "-1", "msg": str(e)}
 
 async def main():
     symbol = pair.strip().upper()
