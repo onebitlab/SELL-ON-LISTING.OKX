@@ -1,68 +1,74 @@
-# Sell on Listing OKX
 
-This Python script automatically places a limit sell order for a specified token pair on OKX as soon as the token is listed and trading becomes available.
+# OKX Sell on Listing Bot
 
-## Features
+This Python bot is designed to automatically place a limit sell order on the OKX spot market. It's developed with reliability, precision, and safety in mind for trading operations.
 
-- Waits for a new token pair to become live on OKX.
-- Monitors for the start of trading.
-- Places a limit sell order at a configurable percentage below the market price.
-- Uses asynchronous requests for fast response.
-- Colorful terminal output for better readability.
+## ⚡️ Features
 
-## Requirements
+* **Asynchronous Programming (`asyncio`, `aiohttp`):** Utilizes an asynchronous approach for high-performance and responsive interactions with the OKX API.
+* **Time Synchronization:** Synchronizes local time with the OKX server to avoid time drift issues when signing API requests.
+* **Continuous Monitoring:** Continuously checks for the availability of the trading pair and the start of official trading via the OKX REST API.
+* **Precise Price and Quantity Calculation:** Uses the `Decimal` data type for accurate financial calculations of price and quantity, which is critical for avoiding floating-point errors.
+* **Robust Retry Mechanism:** Includes an exponential backoff retry mechanism to enhance resilience against temporary network errors and API outages.
+* **Graceful Shutdown:** Correctly handles `Ctrl+C` (`KeyboardInterrupt`) interruptions and ensures a clean program exit.
+* **Tabular Order Output:** Uses the `tabulate` library for clear and structured display of key information about the placed order.
+* **Configuration Validation:** Performs validation of necessary configuration parameters at startup, preventing errors due to incorrect settings.
 
-- Python 3.8+
+## ⚙️ Configuration
 
-## Installation
-
-1. Clone the repository:
-    ```sh
-    git clone https://github.com/yourusername/sell-on-listing.OKX.git
-    cd sell-on-listing.OKX
+1. **Install dependencies:**
     ```
-
-2. Install dependencies:
-    ```sh
     pip install -r requirements.txt
     ```
-
-## Configuration
-
-1. Copy `config_sample.py` to `config.py`:
-    ```sh
-    cp config_sample.py config.py
+    The content of `requirements.txt` should be:
     ```
-2. Edit `config.py` and fill in your OKX API credentials and trading parameters:
+    aiohttp
+    colorama
+    tabulate
+    ```
+
+2. **Create a `config.py` file** in your project's root directory and add the following settings:
     ```python
-    okx_api_key = "your_okx_api_key"
-    okx_api_secret = "your_okx_api_secret"
-    okx_passphrase = "your_okx_api_passphrase"
+    # config.py
 
-    pair = "SOPH-USDT"
-    tokens_to_sell = 10000
-    offset_percent = 1.0  # Percent below market price
+    okx_api_key = "YOUR_API_KEY"
+    okx_api_secret = "YOUR_SECRET_KEY"
+    okx_passphrase = "YOUR_PASSPHRASE"
+
+    # Trading settings
+    pair = "BTC-USDT"        # Trading pair, e.g., "BTC-USDT", "ETH-USDT"
+    tokens_to_sell = 0.001   # Amount of tokens to sell
+    offset_percent = 0.5     # Percentage offset from market price (e.g., 0.5 means 0.5% below market price)
+
+    # Time and interval settings
+    pair_check_interval_seconds = 1.0 # Interval (in seconds) between trade pair availability checks
     ```
 
-**Never share your `config.py` or commit it to version control.**  
-The `.gitignore` file already excludes `config.py` for your safety.
+## ⚠️ Important: API Key Permissions
 
-## Usage
+Ensure your OKX API key has **permissions to view market data and conduct spot trading**.
 
-Run the script:
-```sh
+If you encounter an "Invalid API-key, IP, or permissions for action" error, please check your API key, secret, passphrase, and any IP restrictions on your OKX account.
+
+## ▶️ Usage
+
+Simply run the script:
+```
 python main.py
 ```
+*(Replace `main.py` with the actual name of your main Python file if it differs.)*
 
-The script will:
-- Wait for the specified token pair to be listed.
-- Wait for trading to start.
-- Place a limit sell order at the configured price.
+The bot will start by synchronizing time with the exchange, then wait for the trading pair to become active and official trading to begin. After that, it will calculate the target price and attempt to place a limit sell order.
 
-## Disclaimer
+## 🛠 Notes
 
-This project is for educational purposes only. Use at your own risk. The author is not responsible for any financial losses.
+* The script uses modern asynchronous Python practices.
+* Order details are displayed in an easy-to-read tabular format.
 
-## License
+## 📄 License
 
-MIT License
+MIT License — free to use, modify, and distribute.
+
+## 🛑 Disclaimer
+
+Cryptocurrency trading carries significant risks and may result in the loss of capital. Use this bot at your own risk. The author is not responsible for any financial losses caused by the use of this program. Always understand the risks associated with automated trading and API interaction.
