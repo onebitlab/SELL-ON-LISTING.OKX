@@ -1,5 +1,5 @@
 # config.py
-
+# OKX API Credentials
 okx_api_key = "YOUR_API_KEY"
 okx_api_secret = "YOUR_SECRET_KEY"
 okx_passphrase = "YOUR_PASSPHRASE"
