@@ -1,13 +1,18 @@
 # config.py
+
 # OKX API Credentials
-okx_api_key = "YOUR_API_KEY"
-okx_api_secret = "YOUR_SECRET_KEY"
-okx_passphrase = "YOUR_PASSPHRASE"
+api_key = 'YOUR_OKX_API_KEY'
+api_secret = 'YOUR_OKX_SECRET_KEY'
+passphrase = 'YOUR_OKX_PASSPHRASE'
 
-# Trading settings
-pair = "ALT-USDT"        # Trading pair, e.g., "BTC-USDT", "ETH-USDT"
-tokens_to_sell = 0.001   # Amount of tokens to sell
-offset_percent = 0.5     # Percentage offset from market price (0.5% below market price)
+# Trading configuration
+pair = 'ALT/USDT'                       # Trading pair, e.g.: 'ALT/USDT'
+tokens_for_sale = '100'                 # Amount of tokens to sell
+price_offset = '1.0'                    # Percentage offset from market price (e.g., '1.0' means 1% below)
 
-# Time and interval settings
-pair_check_interval_seconds = 1.0 # Interval (in seconds) between trade pair availability checks
+# Timing configuration
+launch_time = '2025-05-29 12:00:00'     # Exact trading start time (UTC) in 'YYYY-MM-DD HH:MM:SS' format
+pre_launch_pooling = 10                 # How many seconds before launch_time to start checking for the pair listing
+pair_check_interval = 0.5               # Interval (in seconds) between trade pair availability checks
+price_check_interval = 1.0              # Interval (in seconds) between price retrieval attempts on error
+order_timeout = 30                      # Cancel order after this many seconds if it's not filled

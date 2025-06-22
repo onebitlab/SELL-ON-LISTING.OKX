@@ -1,3 +1,4 @@
 aiohttp
+pytz
 colorama
 tabulate

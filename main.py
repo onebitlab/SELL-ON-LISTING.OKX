@@ -1,26 +1,43 @@
 import asyncio
-import aiohttp
+import sys
+import json
 import hmac
 import base64
 import hashlib
-import json
-import sys
+import urllib.parse
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN
-from datetime import datetime, timezone, timedelta
-from config import okx_api_key, okx_api_secret, okx_passphrase, pair, tokens_to_sell, offset_percent
+import pytz
+import aiohttp
+from config import (
+    api_key,
+    api_secret,
+    passphrase,
+    pair as cfg_pair,
+    tokens_for_sale as cfg_tokens,
+    price_offset as cfg_offset,
+    order_timeout as cfg_timeout,
+    pair_check_interval as cfg_pair_check_interval,
+    launch_time as cfg_launch_time,
+    pre_launch_pooling as cfg_pre_launch_pooling,
+    price_check_interval as cfg_price_check_interval
+)
 from colorama import init, Fore, Style
-from tabulate import tabulate # Import tabulate for pretty printing tables
+from tabulate import tabulate
 
-# Initialize colorama for colored console output
 init(autoreset=True)
-
 BASE_URL = "https://www.okx.com"
 
-# Global variable to store the time offset between local PC and OKX server
-# Initially 0, will be updated after synchronization.
-_global_time_offset_ms = 0 
+pair_from_config = cfg_pair.strip().upper()
+pair = pair_from_config.replace('/', '-')
+tokens_for_sale = Decimal(cfg_tokens)
+price_offset = Decimal(cfg_offset)
+order_timeout = int(cfg_timeout)
+pair_check_interval = float(cfg_pair_check_interval)
+pre_launch_pooling = int(cfg_pre_launch_pooling)
+price_check_interval = float(cfg_price_check_interval)
+launch_time_utc = datetime.strptime(cfg_launch_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC)
 
-# --- Logging Functions for informative output ---
 def log_info(message):
     print(f"{Fore.CYAN}[INFO]{Style.RESET_ALL} {message}")
 
@@ -33,40 +50,19 @@ def log_warning(message):
 def log_error(message):
     print(f"{Fore.RED}[ERROR]{Style.RESET_ALL} {message}")
 
-# --- Helper functions for OKX API interaction ---
-
 def get_timestamp():
-    """
-    Generates an ISO 8601 UTC timestamp for signing OKX requests.
-    Applies _global_time_offset_ms for synchronization with OKX server time.
-    """
-    # Get current UTC time
-    now_utc = datetime.now(timezone.utc)
-    
-    # Apply the global time offset (in milliseconds)
-    # timedelta expects seconds or microseconds, so divide by 1000
-    adjusted_now_utc = now_utc + timedelta(milliseconds=_global_time_offset_ms)
-    
-    return adjusted_now_utc.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+    return datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
 
 def sign(secret_key, timestamp, method, path, body):
-    """
-    Generates the signature for an OKX API request.
-    The request body (body) should be an empty string for GET requests.
-    """
     if isinstance(body, dict):
         body = json.dumps(body)
     message = f'{timestamp}{method}{path}{body}'
     mac = hmac.new(secret_key.encode(), msg=message.encode(), digestmod=hashlib.sha256)
     return base64.b64encode(mac.digest()).decode()
 
-def build_headers(api_key, secret_key, passphrase, method, path, body=''):
-    """
-    Constructs HTTP request headers, including authentication data.
-    Uses get_timestamp() which now accounts for the time offset.
-    """
+def build_headers(method, path, body=''):
     timestamp = get_timestamp()
-    signature = sign(secret_key, timestamp, method, path, body)
+    signature = sign(api_secret, timestamp, method, path, body)
     return {
         'OK-ACCESS-KEY': api_key,
         'OK-ACCESS-SIGN': signature,
@@ -75,254 +71,278 @@ def build_headers(api_key, secret_key, passphrase, method, path, body=''):
         'Content-Type': 'application/json'
     }
 
-# --- Functions for interacting with OKX API with improved error handling ---
-
-async def fetch_data(session, url, method="GET", headers=None, data=None, retries=3, backoff_factor=0.5):
-    """
-    Universal asynchronous function for performing HTTP requests.
-    Includes retries with exponential backoff and timeouts.
-
-    Args:
-        session (aiohttp.ClientSession): The aiohttp session.
-        url (str): The URL for the request.
-        method (str): The HTTP method ('GET', 'POST', etc.).
-        headers (dict, optional): Request headers.
-        data (str, optional): Request body (for POST, PUT).
-        retries (int): Number of retries on error.
-        backoff_factor (float): Multiplier for calculating delay between retries.
-
-    Returns:
-        dict: JSON response from the API or a dictionary with error information.
-    """
+async def fetch_api(session, path, method="GET", params=None, data=None, retries=3):
+    request_path = path
+    if params:
+        request_path += '?' + urllib.parse.urlencode(params)
+    
+    url = BASE_URL + path
+    body_json = json.dumps(data) if data else ""
+    headers = build_headers(method, request_path, body_json)
+    
     for attempt in range(retries):
         try:
-            # Set timeout for the request (10 seconds total for the request)
             timeout = aiohttp.ClientTimeout(total=10)
-            async with session.request(method, url, headers=headers, data=data, timeout=timeout) as resp:
-                # raise_for_status() raises an exception if the response status is 4xx or 5xx
-                resp.raise_for_status()
-                return await resp.json()
-        except asyncio.TimeoutError:
-            log_warning(f"Timeout occurred for {url} (attempt {attempt + 1}/{retries})")
-        except aiohttp.ClientError as e:
-            log_warning(f"Network error when requesting {url}: {e} (attempt {attempt + 1}/{retries})")
-        except json.JSONDecodeError:
-            log_warning(f"Failed to decode JSON from response {url} (attempt {attempt + 1}/{retries})")
+            async with session.request(method, url, headers=headers, params=params, data=body_json, timeout=timeout) as resp:
+                if resp.status // 100 != 2:
+                    log_warning(f"API request to {url} failed with status {resp.status}. Response: {await resp.text()}")
+                    if attempt < retries - 1:
+                        await asyncio.sleep(1)
+                        continue
+                    return None
+                
+                response_json = await resp.json()
+                if response_json.get("code") != "0":
+                    log_warning(f"OKX API Error: {response_json.get('msg')} (Code: {response_json.get('code')})")
+                    return None
+                
+                return response_json.get("data", [])
         except Exception as e:
-            log_error(f"Unexpected error when requesting {url}: {e} (attempt {attempt + 1}/{retries})")
+            log_warning(f"Network error on attempt {attempt+1} for {url}: {e}")
+            if attempt < retries - 1:
+                await asyncio.sleep(1)
+    return None
 
-        # If it's not the last attempt, wait and retry
-        if attempt < retries - 1:
-            wait_time = backoff_factor * (2 ** attempt)
-            log_info(f"Retrying in {wait_time:.2f} seconds...")
-            await asyncio.sleep(wait_time)
-    log_error(f"Failed to fetch data from {url} after {retries} attempts.")
-    # Return a standard error format so the calling code can handle it
-    return {"code": "-1", "msg": "Failed after multiple retries or unhandled error"}
+def print_order_details(order):
+    order_table = [
+        ["Symbol", order.get('instId', 'N/A')],
+        ["Order ID", order.get('ordId', 'N/A')],
+        ["Status", order.get('state', 'N/A')],
+        ["Type", order.get('ordType', 'N/A')],
+        ["Side", order.get('side', 'N/A')],
+        ["Quantity", order.get('sz', 'N/A')],
+        ["Price", order.get('px', 'N/A')],
+        ["Filled Qty", order.get('accFillSz', 'N/A')],
+        ["Avg. Fill Price", order.get('avgPx', 'N/A')],
+        ["Time in Force", order.get('tif', 'N/A')],
+    ]
+    print("-" * 37)
+    print(tabulate(order_table, tablefmt="fancy_grid"))
+    print("-" * 37)
 
-async def fetch_okx_server_time(session):
-    """
-    Retrieves the current OKX server time in milliseconds.
-    """
-    url = f"{BASE_URL}/api/v5/public/time"
-    # No authentication headers are needed to get server time
-    result = await fetch_data(session, url, retries=5, backoff_factor=1) # More attempts and delay
-    if result and result.get("code") == "0" and result.get("data"):
-        try:
-            server_time_ms = int(result["data"][0]["ts"])
-            log_success(f"Received OKX server time: {server_time_ms} ms")
-            return server_time_ms
-        except (ValueError, KeyError):
-            log_error(f"Failed to get or convert server time from response: {result}")
-            return None
+async def pre_launch_checks(session: aiohttp.ClientSession) -> bool:
+    log_info("Performing pre-launch API key checks...")
+    data = await fetch_api(session, "/api/v5/account/balance", params={'ccy': 'USDT'})
+    if data is not None:
+        log_success("API keys are valid and have necessary permissions.")
+        return True
     else:
-        log_error(f"Failed to get OKX server time: {result}")
-        return None
+        log_error("API error during pre-launch API key check.")
+        log_error("Please check your API key, secret, passphrase, and permissions.")
+        return False
 
-async def wait_for_pair(session, symbol):
-    """
-    Waits until the trading pair becomes active on the exchange.
-    """
-    log_info(f"Waiting for trading pair {symbol} to become active...")
-    url = f"{BASE_URL}/api/v5/public/instruments?instType=SPOT"
-    while True:
-        data = await fetch_data(session, url) # Use fetch_data with retries
-        if data and data.get("code") == "0":
-            instruments = data.get("data", [])
-            for item in instruments:
-                if item['instId'].upper() == symbol.upper():
-                    log_success(f"Pair {symbol} is now active!")
-                    return
-            log_warning(f"Pair {symbol} not found in the instrument list yet.")
-        else:
-            log_warning(f"Invalid instrument data: {data}")
-        await asyncio.sleep(1) # Short delay before the next check
-
-
-async def wait_for_trading_start(session, symbol):
-    """
-    Waits for official trading to start for the given pair and returns the last price.
-    """
-    log_info(f"Waiting for official trading to start for {symbol}...")
-    url = f"{BASE_URL}/api/v5/market/ticker?instId={symbol}"
-    while True:
-        data = await fetch_data(session, url)
-        if data and data.get('code') == '0' and data.get('data'):
-            ticker = data['data'][0]
-            last = ticker.get('last')
-            try:
-                last_price = Decimal(last)
-                if last_price > 0:
-                    log_success(f"Trading started! Last price: {last_price}")
-                    return last_price
-                else:
-                    log_warning(f"Trading not started yet. Last price: {last}")
-            except Exception:
-                log_warning(f"Ticker 'last' value is invalid: {last}")
-        else:
-            log_warning(f"Invalid ticker data: {data}")
-        await asyncio.sleep(0.5)
-
-
-async def place_limit_order(session, inst_id, size, px):
-    """
-    Places a limit sell order.
-    """
-    path = "/api/v5/trade/order"
-    body = {
-        "instId": inst_id,
-        "tdMode": "cash",  # Trade mode: spot
-        "side": "sell",    # Direction: sell
-        "ordType": "limit",# Order type: limit
-        "sz": str(size),   # Quantity (string)
-        "px": str(px)      # Price (string)
-    }
-    body_json = json.dumps(body)
-    # build_headers now uses get_timestamp() which accounts for the global time offset
-    headers = build_headers(okx_api_key, okx_api_secret, okx_passphrase, "POST", path, body_json)
-    
-    # For placing an order, retries are usually not desired (retries=1)
-    # to avoid duplicating orders. An order error should be handled immediately.
-    result = await fetch_data(session, BASE_URL + path, method="POST", headers=headers, data=body_json, retries=1)
-    return result
-
-# --- Main program logic ---
-async def main():
-    """
-    The main asynchronous function controlling the bot's logic.
-    """
-    global _global_time_offset_ms # Declare that we will modify the global variable
-
-    # Validate input data from config.py
-    if not all([okx_api_key, okx_api_secret, okx_passphrase, pair, tokens_to_sell is not None, offset_percent is not None]):
-        log_error("One or more required configuration parameters are missing. Please check config.py")
-        sys.exit(1) # Exit the program with an error code
-
-    symbol = pair.strip().upper()
-
+async def wait_until_launch(session: aiohttp.ClientSession):
     try:
-        tokens_to_sell_dec = Decimal(str(tokens_to_sell))
-        offset_percent_dec = Decimal(str(offset_percent))
+        path = "/api/v5/public/time"
+        server_time_data = await fetch_api(session, path)
+        if not server_time_data:
+            log_error("Could not fetch server time to start countdown. Proceeding immediately.")
+            return
+
+        server_now_ms = int(server_time_data[0]['ts'])
+        server_now = datetime.fromtimestamp(server_now_ms / 1000, tz=pytz.UTC)
+        wait_until = launch_time_utc - timedelta(seconds=pre_launch_pooling)
+
+        if server_now >= wait_until:
+            log_info(f"Launch time already reached or close (within {pre_launch_pooling}s). Skipping wait.")
+            return
+
+        while server_now < wait_until:
+            remaining = wait_until - server_now
+            if remaining.total_seconds() < 0:
+                break
+            
+            total_seconds = int(remaining.total_seconds())
+            hours, remainder = divmod(total_seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            print(f"{Fore.CYAN}[INFO]{Style.RESET_ALL} Waiting for launch: "
+                  f"{str(hours).zfill(2)}:{str(minutes).zfill(2)}:{str(seconds).zfill(2)}", end="\r")
+            await asyncio.sleep(1)
+            
+            server_time_data = await fetch_api(session, path)
+            if server_time_data:
+                server_now_ms = int(server_time_data[0]['ts'])
+                server_now = datetime.fromtimestamp(server_now_ms / 1000, tz=pytz.UTC)
+
+        print()
+        log_info(f"{pre_launch_pooling} seconds left until launch time. Starting to check for listing...")
+    except asyncio.CancelledError:
+        log_warning("Waiting for launch time was cancelled.")
+        raise
     except Exception as e:
-        log_error(f"Invalid numerical values in configuration: {e}. Ensure tokens_to_sell and offset_percent are numbers.")
-        sys.exit(1)
+        log_error(f"Error while waiting for launch time: {e}")
+        raise
 
-    # Additional checks for reasonable values
-    if tokens_to_sell_dec <= 0:
-        log_error("The quantity 'tokens_to_sell' must be greater than 0.")
-        sys.exit(1)
-    # Offset percentage must be within reasonable limits (e.g., from 0 to 99.99%)
-    if not (Decimal("0") <= offset_percent_dec < Decimal("100")):
-        log_error("The offset percentage (offset_percent) must be between 0 and 99.99.")
-        sys.exit(1)
+async def wait_for_pair_listing(session, symbol):
+    log_info(f"Waiting for pair {symbol} to be listed (checking every {pair_check_interval}s)...")
+    path = "/api/v5/public/instruments"
+    params = {"instType": "SPOT"}
+    while True:
+        try:
+            instruments = await fetch_api(session, path, params=params)
+            if instruments:
+                for inst in instruments:
+                    if inst['instId'] == symbol:
+                        log_success(f"Pair {symbol} found on OKX!")
+                        return instruments
+            await asyncio.sleep(pair_check_interval)
+        except asyncio.CancelledError:
+            log_warning("Waiting for pair listing was cancelled.")
+            raise
+        except Exception as e:
+            log_error(f"Error querying instruments: {e}. Retrying in {pair_check_interval}s...")
+            await asyncio.sleep(pair_check_interval)
 
+async def get_current_price(session, symbol):
+    path = f"/api/v5/market/ticker"
+    params = {"instId": symbol}
+    while True:
+        try:
+            ticker_data = await fetch_api(session, path, params=params)
+            if ticker_data and 'last' in ticker_data[0]:
+                price = Decimal(ticker_data[0]['last'])
+                if price > 0:
+                    return price
+            log_warning(f"Waiting for a valid price... Retrying in {price_check_interval}s.")
+            await asyncio.sleep(price_check_interval)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log_warning(f"Error getting current price. Retrying in {price_check_interval}s...")
+            await asyncio.sleep(price_check_interval)
+
+async def wait_for_order_fill_or_timeout(session, symbol, order_id, timeout):
+    log_info(f"Waiting for order {order_id} to fill or timeout in {timeout} seconds...")
+    start_time = asyncio.get_event_loop().time()
+    path = "/api/v5/trade/order"
+    params = {"instId": symbol, "ordId": order_id}
+
+    while True:
+        try:
+            if asyncio.get_event_loop().time() - start_time > timeout:
+                log_info(f"Timeout reached. Cancelling order {order_id}...")
+                cancel_path = "/api/v5/trade/cancel-order"
+                cancel_data = {"instId": symbol, "ordId": order_id}
+                cancellation_result = await fetch_api(session, cancel_path, method="POST", data=cancel_data)
+                if cancellation_result and cancellation_result[0].get('sCode') == "0":
+                    log_info(f"Order {order_id} cancelled due to timeout.")
+                else:
+                    order_status = await fetch_api(session, path, params=params)
+                    if order_status and order_status[0]['state'] == 'filled':
+                        log_success(f"Order {order_id} was filled before it could be cancelled.")
+                        print_order_details(order_status[0])
+                    else:
+                        log_error(f"Failed to cancel order {order_id}. Reason: {cancellation_result}")
+                return
+
+            order_status = await fetch_api(session, path, params=params)
+            if order_status:
+                state = order_status[0]['state']
+                if state == 'filled':
+                    log_success(f"Order {order_id} filled successfully.")
+                    print_order_details(order_status[0])
+                    return
+                elif state in ['canceled', 'placed error']:
+                    log_warning(f"Order {order_id} ended with status: {state}")
+                    return
+            
+            await asyncio.sleep(1)
+
+        except asyncio.CancelledError:
+            log_warning(f"Waiting for order {order_id} fill/timeout was cancelled. Attempting to cancel order...")
+            try:
+                cancel_path = "/api/v5/trade/cancel-order"
+                cancel_data = {"instId": symbol, "ordId": order_id}
+                await fetch_api(session, cancel_path, method="POST", data=cancel_data)
+                log_info(f"Order {order_id} cancelled due to task cancellation.")
+            except Exception as e:
+                log_warning(f"Could not cancel order {order_id} on task cancellation: {e}")
+            raise
+        except Exception as e:
+            log_warning(f"Error checking order status for {order_id}: {e}")
+            await asyncio.sleep(1)
+
+def get_price_precision(symbol_info):
+    tick_size = Decimal(symbol_info['tickSz'])
+    return abs(tick_size.normalize().as_tuple().exponent)
+
+def get_lot_size_precision(symbol_info):
+    step_size = Decimal(symbol_info['lotSz'])
+    return abs(step_size.normalize().as_tuple().exponent)
+
+async def main():
     async with aiohttp.ClientSession() as session:
         try:
-            # --- Time Synchronization Step ---
-            log_info("Starting time synchronization with OKX server...")
-            local_time_before_request = datetime.now(timezone.utc)
-            okx_server_time_ms = await fetch_okx_server_time(session)
-            local_time_after_request = datetime.now(timezone.utc)
-
-            if okx_server_time_ms is None:
-                log_error("Failed to synchronize time with OKX server. Program halted.")
-                sys.exit(1)
-            
-            # Average local request time for a more accurate offset calculation
-            local_current_time_ms = int(((local_time_before_request.timestamp() + local_time_after_request.timestamp()) / 2) * 1000)
-            
-            _global_time_offset_ms = okx_server_time_ms - local_current_time_ms
-            log_info(f"Time offset (OKX Server - Local): {_global_time_offset_ms} ms")
-            log_success("Time synchronization with OKX completed.")
-
-            # --- Main logic follows, using synchronized time ---
-            await wait_for_pair(session, symbol)
-            
-            market_price = await wait_for_trading_start(session, symbol)
-            if not market_price:
-                log_error("Could not get a valid market price. Exiting.")
+            if not await pre_launch_checks(session):
+                log_error("API key pre-checks failed. Exiting.")
                 return
 
-            offset = (market_price * offset_percent_dec / Decimal("100")).quantize(Decimal('1e-8'), rounding=ROUND_DOWN)
-            target_price = (market_price - offset).quantize(Decimal('1e-8'), rounding=ROUND_DOWN)
+            await wait_until_launch(session)
+
+            all_instruments = await wait_for_pair_listing(session, pair)
+
+            current_price = await get_current_price(session, pair)
             
-            if target_price <= 0:
-                log_error(f"Calculated target price ({target_price}) is invalid. Market price: {market_price}, offset: {offset}")
+            offset = current_price * price_offset / Decimal('100')
+            target_price = current_price - offset
+            
+            quantity = tokens_for_sale
+
+            symbol_info = next((inst for inst in all_instruments if inst['instId'] == pair), None)
+            if not symbol_info:
+                log_error(f"Symbol information for {pair} not found. Cannot apply filters.")
+                return
+            
+            price_precision = get_price_precision(symbol_info)
+            target_price = target_price.quantize(Decimal(f'1e-{price_precision}'), rounding=ROUND_DOWN)
+
+            quantity_precision = get_lot_size_precision(symbol_info)
+            quantity = quantity.quantize(Decimal(f'1e-{quantity_precision}'), rounding=ROUND_DOWN)
+
+            if quantity <= 0:
+                log_error(f"Calculated quantity is zero or less after applying precision rules. Check 'tokens_for_sale' and pair's lot size.")
                 return
 
-            log_info(f"Target sell price: {target_price} (market: {market_price})")
+            log_info(f"Placing limit sell order for {quantity} {pair.split('-')[0]} at {target_price} USDT (market: {current_price})...")
 
-            log_info(f"Attempting to place a SELL limit order: {tokens_to_sell_dec} {symbol.split('-')[0]} at price {target_price} {symbol.split('-')[1]}")
-            result = await place_limit_order(session, symbol, tokens_to_sell_dec, target_price)
-            
-            # Process the order placement result
-            if result and result.get("code") == "0":
-                log_success("Order placed successfully.")
-                if result.get("data"):
-                    # Assuming a single order for simplicity, take the first item
-                    order_data = result["data"][0] 
-                    table_headers = ["Field", "Value"]
-                    table_data = [
-                        ["Order ID", order_data.get("ordId", "N/A")],
-                        ["Instrument ID", order_data.get("instId", "N/A")],
-                        ["Client Order ID", order_data.get("clOrdId", "N/A")],
-                        ["Order Type", order_data.get("ordType", "N/A")],
-                        ["Side", order_data.get("sId", "N/A")], # Note: OKX API uses sId for side in response
-                        ["State", order_data.get("state", "N/A")]
-                    ]
-                    log_info(f"\n{tabulate(table_data, headers=table_headers, tablefmt='grid')}")
-                else:
-                    log_warning("No detailed order data received in the response.")
-            else:
-                # Extract detailed error information if available
-                error_msg = result.get("msg", "Error message not available.") if result else "No response received from API."
-                log_error(f"Failed to place order. Code: {result.get('code', 'N/A')}, Message: {error_msg}")
-                if result and result.get("data"):
-                    log_error(f"Additional order data: {json.dumps(result['data'], indent=2)}")
+            retries = 3
+            for attempt in range(1, retries + 1):
+                try:
+                    log_info(f"Placing order (attempt {attempt}/{retries})...")
+                    path = "/api/v5/trade/order"
+                    order_data = {
+                        "instId": pair, "tdMode": "cash", "side": "sell", "ordType": "limit",
+                        "sz": str(quantity), "px": str(target_price)
+                    }
+                    order_response = await fetch_api(session, path, method="POST", data=order_data, retries=1)
+                    
+                    if order_response and order_response[0].get('sCode') == '0':
+                        order_id = order_response[0]['ordId']
+                        log_success(f"Order placed successfully! Order ID: {order_id}")
+                        await wait_for_order_fill_or_timeout(session, pair, order_id, order_timeout)
+                        break
+                    else:
+                        log_error(f"Failed to place order. Response: {order_response}")
+                        if attempt == retries: return
+                        await asyncio.sleep(1)
 
-        except KeyboardInterrupt:
-            # Handle Ctrl+C interruption within the main loop
-            log_warning("Program interrupted by user (Ctrl+C). Shutting down.")
-            # Here you can add logic for a "clean" shutdown, for example,
-            # canceling all open orders if necessary during an emergency shutdown.
-            # Example: await cancel_all_open_orders(session)
+                except asyncio.CancelledError:
+                    log_warning("Order placement was cancelled.")
+                    raise
+
+        except asyncio.CancelledError:
+            log_warning("Main task was cancelled.")
         except Exception as e:
-            # Catch any other unexpected errors in the main program loop
-            log_error(f"An unexpected error occurred in the main program loop: {e}")
+            log_error(f"A general error occurred in the main function: {e}")
         finally:
-            # This block is guaranteed to execute in any case:
-            # upon normal completion, error, or user interruption.
             log_info("Program shutdown completed.")
 
-# --- Program entry point ---
 if __name__ == "__main__":
     try:
-        # Run the main asynchronous function
         asyncio.run(main())
     except KeyboardInterrupt:
-        # This outer catch is needed in case Ctrl+C is pressed
-        # before main() starts execution or if main() finishes very quickly.
-        log_warning("Program terminated by external interruption (Ctrl+C).")
+        log_warning("\nProgram interrupted by user (Ctrl+C). Shutting down.")
     except Exception as e:
-        # Catch critical errors that might occur during asyncio startup itself
-        log_error(f"Critical error during program startup: {e}")
+        log_error(f"An unexpected error occurred in the main execution block: {e}")
+    finally:
+        log_info("Program terminated.")

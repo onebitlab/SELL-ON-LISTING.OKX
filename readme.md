@@ -1,69 +1,79 @@
 
-# OKX Sell on Listing Bot
+# 🚀 OKX Sell on Listing Bot
 
-This Python bot is designed to automatically place a limit sell order on the OKX spot market. It's developed with reliability, precision, and safety in mind for trading operations.
+This Python script automatically places a limit sell order immediately after a new token is listed on OKX, at a configurable price below the market. It's built for speed, precision, and safety during high-volatility listing events.
 
 ## ⚡️ Features
 
-* **Asynchronous Programming (`asyncio`, `aiohttp`):** Utilizes an asynchronous approach for high-performance and responsive interactions with the OKX API.
-* **Time Synchronization:** Synchronizes local time with the OKX server to avoid time drift issues when signing API requests.
-* **Continuous Monitoring:** Continuously checks for the availability of the trading pair and the start of official trading via the OKX REST API.
-* **Precise Price and Quantity Calculation:** Uses the `Decimal` data type for accurate financial calculations of price and quantity, which is critical for avoiding floating-point errors.
-* **Robust Retry Mechanism:** Includes an exponential backoff retry mechanism to enhance resilience against temporary network errors and API outages.
-* **Graceful Shutdown:** Correctly handles `Ctrl+C` (`KeyboardInterrupt`) interruptions and ensures a clean program exit.
-* **Tabular Order Output:** Uses the `tabulate` library for clear and structured display of key information about the placed order.
-* **Configuration Validation:** Performs validation of necessary configuration parameters at startup, preventing errors due to incorrect settings.
+  * **Async/await** — Built using asynchronous programming for maximum responsiveness with the OKX API.
+  * **Time synchronization** — Syncs with OKX server time before starting the countdown to avoid clock drift.
+  * **Configurable Pre-Launch Pooling** — Begins checking for the trading pair a specified number of seconds (`pre_launch_pooling`) before your exact `launch_time`.
+  * **Continuous Monitoring** — Polls the OKX REST API for the appearance of the trading pair at a defined `pair_check_interval`.
+  * **Smart Price and Quantity Calculation** — Applies OKX's instrument rules (`tickSz` for price and `lotSz` for quantity) to ensure your order meets exchange requirements and avoids errors.
+  * **Infinite Price Retrieval Retries** — Continuously attempts to fetch the current price until successful or program interruption, with a configurable `price_check_interval` between attempts.
+  * **Automatic Order Cancellation** — If the order isn't filled within a configurable `order_timeout`, it is automatically cancelled.
+  * **API Key Pre-Checks** — Verifies the validity of your API key, secret, and passphrase using a lightweight balance check before starting the main bot logic.
 
 ## ⚙️ Configuration
 
-1. **Install dependencies:**
-    ```
-    pip install -r requirements.txt
-    ```
-    The content of `requirements.txt` should be:
-    ```
+1.  **Install dependencies:**
+    *Create a `requirements.txt` file with the following content:*
+
+    ```txt
     aiohttp
+    pytz
     colorama
     tabulate
     ```
 
-2. **Create a `config.py` file** in your project's root directory and add the following settings:
+    *And run:*
+
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+2.  **Create a `config.py` file in the root directory:**
+
     ```python
-    # config.py
+    # OKX API Credentials
+    api_key = 'YOUR_OKX_API_KEY'
+    api_secret = 'YOUR_OKX_SECRET_KEY'
+    passphrase = 'YOUR_OKX_PASSPHRASE'
 
-    okx_api_key = "YOUR_API_KEY"
-    okx_api_secret = "YOUR_SECRET_KEY"
-    okx_passphrase = "YOUR_PASSPHRASE"
+    # Trading configuration
+    pair = 'ALT/USDT'                       # Trading pair, e.g.: 'ALT/USDT'
+    tokens_for_sale = '100'                 # Amount of tokens to sell
+    price_offset = '1.0'                    # Percentage below market price (e.g., '1.0' means 1% below)
 
-    # Trading settings
-    pair = "BTC-USDT"        # Trading pair, e.g., "BTC-USDT", "ETH-USDT"
-    tokens_to_sell = 0.001   # Amount of tokens to sell
-    offset_percent = 0.5     # Percentage offset from market price (e.g., 0.5 means 0.5% below market price)
-
-    # Time and interval settings
-    pair_check_interval_seconds = 1.0 # Interval (in seconds) between trade pair availability checks
+    # Timing configuration
+    launch_time = '2025-05-29 12:00:00'     # Exact trading start time (UTC) in 'YYYY-MM-DD HH:MM:SS' format
+    pre_launch_pooling = 10                 # How many seconds before launch_time to start checking for the pair listing
+    pair_check_interval = 0.5               # Interval (in seconds) between trade pair availability checks
+    price_check_interval = 1.0              # Interval (in seconds) between price retrieval attempts upon error
+    order_timeout = 30                      # Cancel order after this many seconds if not filled
     ```
 
 ## ⚠️ Important: API Key Permissions
 
-Ensure your OKX API key has **permissions to view market data and conduct spot trading**.
+Make sure your OKX API key has **"Trade"** permission enabled.
 
-If you encounter an "Invalid API-key, IP, or permissions for action" error, please check your API key, secret, passphrase, and any IP restrictions on your OKX account.
+If you encounter an `"Invalid Sign"` error (code: `50113`), it is highly likely that your `api_key`, `api_secret`, or `passphrase` are incorrect. Double-check them carefully. Also, ensure any IP restrictions for the API key match your server's IP address.
 
 ## ▶️ Usage
 
-Simply run the script:
-```
+Simply rename the script file to `main.py` and run:
+
+```bash
 python main.py
 ```
-*(Replace `main.py` with the actual name of your main Python file if it differs.)*
-
-The bot will start by synchronizing time with the exchange, then wait for the trading pair to become active and official trading to begin. After that, it will calculate the target price and attempt to place a limit sell order.
 
 ## 🛠 Notes
 
-* The script uses modern asynchronous Python practices.
-* Order details are displayed in an easy-to-read tabular format.
+  * The `passphrase` is not your login password. It is a specific password you create for the API key on the OKX website.
+  * The time format for `launch_time` must be `"YYYY-MM-DD HH:MM:SS"` in UTC.
+  * If you launch the bot after `launch_time` has passed, it will immediately begin checking for the pair.
+  * The script uses modern Python `asyncio` and `aiohttp` for robust operation.
+  * Order details are displayed in a readable table format using `tabulate`.
 
 ## 📄 License
 
