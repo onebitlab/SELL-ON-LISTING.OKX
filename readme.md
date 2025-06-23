@@ -16,21 +16,11 @@ This Python script automatically places a limit sell order immediately after a n
 
 ## ⚙️ Configuration
 
-1.  **Install dependencies:**
-    *Create a `requirements.txt` file with the following content:*
+1. **Install dependencies:**
 
-    ```txt
-    aiohttp
-    pytz
-    colorama
-    tabulate
-    ```
-
-    *And run:*
-
-    ```bash
-    pip install -r requirements.txt
-    ```
+   ```bash
+   pip install -r requirements.txt
+   ```
 
 2.  **Create a `config.py` file in the root directory:**
 
